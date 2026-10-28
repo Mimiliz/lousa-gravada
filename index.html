@@ -126,7 +126,7 @@ select{width:100%;font:inherit;color:var(--fg);background:var(--raised);border:1
 <div class="top">
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8 21h8M12 17v4M6 13c2-4 4-4 6-1s4 2 6-3"/></svg>
-    Lousa Gravada <small id="fmtLabel">16:9</small>
+    Lousa Gravada <small id="fmtLabel">16:9</small> <small>v4</small>
   </div>
   <div class="meter" title="Nível do microfone"><i id="meter"></i></div>
   <div class="timer" id="timer"><span class="dot"></span><span id="time">00:00</span></div>
@@ -247,7 +247,7 @@ const S = {
   penOnly: store.get('penOnly', false),
   camMode: store.get('camMode','janela'), camSize: store.get('camSize','m'),
   camShape: store.get('camShape','redonda'), mirror: store.get('mirror', false),
-  quality: store.get('quality','1080'),
+  quality: store.get('quality2','720'),
   camId: null, micId: null,
 };
 const SIZES = [4, 8, 15];
@@ -527,7 +527,7 @@ function updateUI(){
 document.querySelectorAll('.seg[data-k]').forEach(g => g.addEventListener('click', e => {
   const b = e.target.closest('button[data-v]'); if (!b || b.disabled) return;
   const k = g.dataset.k, v = b.dataset.v, old = S[k];
-  S[k] = v; store.set(k, v);
+  S[k] = v; store.set(k === 'quality' ? 'quality2' : k, v);
   if (k === 'format' && v !== old) setFormat(v);
   if (k === 'bg'){ if (S.color === BGS[old].ink || S.color === '#14161a' || S.color === '#ffffff') S.color = BGS[v].ink; buildBg(); }
   if (k === 'quality') sizeOut();
