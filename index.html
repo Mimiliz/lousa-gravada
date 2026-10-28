@@ -18,7 +18,8 @@
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html,body{height:100%;margin:0}
-body{background:#0d0f13;color:var(--fg);font:15px/1.4 var(--font);display:grid;grid-template-rows:auto 1fr auto;
+body{height:100dvh;position:fixed;inset:0;width:100%}
+body{background:#0d0f13;color:var(--fg);font:15px/1.4 var(--font);display:grid;grid-template-rows:auto minmax(0,1fr) auto;
   overflow:hidden;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;
   padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
 button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;touch-action:manipulation}
@@ -261,9 +262,8 @@ const BGS = {
 S.color = BGS[S.bg].ink;
 
 const stage = $('#stage'), camVid = $('#camVid');
-// "desynchronized" pede ao Chrome o modo de baixa latência para a caneta
 const mk = (opts) => { const c = document.createElement('canvas'); return [c, c.getContext('2d', opts) || c.getContext('2d')]; };
-const [bgc, gctx] = mk(), [board, bctx] = mk({desynchronized:true}), [live, lctx] = mk({desynchronized:true});
+const [bgc, gctx] = mk(), [board, bctx] = mk(), [live, lctx] = mk();
 const [out, octx] = mk({alpha:false});   // quadro do vídeo, montado só durante a gravação
 bgc.style.zIndex = 0; board.style.zIndex = 2; live.style.zIndex = 3;
 stage.prepend(bgc); stage.append(board, live);
