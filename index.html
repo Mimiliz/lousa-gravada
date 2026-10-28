@@ -48,7 +48,11 @@ svg{display:block}
 
 /* palco */
 #wrap{position:relative;display:grid;place-items:center;overflow:hidden;min-height:0}
-#stage{display:block;touch-action:none;background:#fff;box-shadow:0 0 0 1px #000,0 10px 40px rgba(0,0,0,.5)}
+#stage{position:relative;overflow:hidden;touch-action:none;background:#fff;box-shadow:0 0 0 1px #000,0 10px 40px rgba(0,0,0,.5)}
+#stage > *{position:absolute;pointer-events:none}
+#stage canvas{left:0;top:0;width:100%;height:100%}
+#camVid{object-fit:cover;background:#000;border:0 solid #fff;visibility:hidden;z-index:1}
+#camVid.win{z-index:4;box-shadow:0 6px 24px rgba(0,0,0,.35)}
 #stage.recording{box-shadow:0 0 0 3px var(--rec),0 10px 40px rgba(0,0,0,.5)}
 
 /* ferramentas */
@@ -112,7 +116,6 @@ select{width:100%;font:inherit;color:var(--fg);background:var(--raised);border:1
 .count{font-size:min(30vw,220px);font-weight:800;color:#fff;font-variant-numeric:tabular-nums;text-shadow:0 6px 40px rgba(0,0,0,.6);background:none;pointer-events:none}
 .toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:#fff;color:#111;
   padding:10px 16px;border-radius:12px;font-weight:600;z-index:40;box-shadow:0 10px 30px rgba(0,0,0,.4);max-width:calc(100vw - 32px)}
-#camVid{position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none}
 @media (max-width:640px){.brand small{display:none}.meter{display:none}}
 @media (prefers-reduced-motion:reduce){.sheet{transition:none}.timer.on .dot{animation:none}}
 </style>
@@ -142,7 +145,7 @@ select{width:100%;font:inherit;color:var(--fg);background:var(--raised);border:1
   </button>
 </div>
 
-<main id="wrap"><canvas id="stage"></canvas></main>
+<main id="wrap"><div id="stage"><video id="camVid" muted playsinline autoplay></video></div></main>
 
 <div class="tools">
   <div class="grp" id="toolGrp">
@@ -178,6 +181,10 @@ select{width:100%;font:inherit;color:var(--fg);background:var(--raised);border:1
     <div class="field"><span class="label">Formato do vídeo</span>
       <div class="seg" data-k="format"><button data-v="16:9">Horizontal 16:9</button><button data-v="9:16">Vertical 9:16 (TikTok)</button></div>
       <p class="hint" id="fmtHint">Troque o formato antes de começar a escrever.</p>
+    </div>
+    <div class="field"><span class="label">Qualidade do vídeo</span>
+      <div class="seg" data-k="quality"><button data-v="1080">Full HD 1080p</button><button data-v="720">HD 720p (mais leve)</button></div>
+      <p class="hint">Se o vídeo gravado ficar travando, use 720p.</p>
     </div>
     <div class="field"><span class="label">Fundo da lousa</span>
       <div class="seg" data-k="bg"><button data-v="branco">Branco</button><button data-v="grade">Quadriculado</button><button data-v="pontos">Pontilhado</button><button data-v="quadro">Quadro verde</button><button data-v="preto">Preto</button></div>
@@ -224,7 +231,6 @@ select{width:100%;font:inherit;color:var(--fg);background:var(--raised);border:1
 <div class="overlay" id="countdown" hidden style="background:rgba(0,0,0,.35)"><div class="count" id="countNum">3</div></div>
 <div class="toast" id="toast" hidden></div>
 
-<video id="camVid" muted playsinline autoplay></video>
 
 <script>
 (() => {
@@ -240,6 +246,7 @@ const S = {
   penOnly: store.get('penOnly', false),
   camMode: store.get('camMode','janela'), camSize: store.get('camSize','m'),
   camShape: store.get('camShape','redonda'), mirror: store.get('mirror', false),
+  quality: store.get('quality','1080'),
   camId: null, micId: null,
 };
 const SIZES = [4, 8, 15];
@@ -253,9 +260,13 @@ const BGS = {
 };
 S.color = BGS[S.bg].ink;
 
-const stage = $('#stage'), sctx = stage.getContext('2d');
-const mk = () => { const c = document.createElement('canvas'); return [c, c.getContext('2d')]; };
-const [board, bctx] = mk(), [live, lctx] = mk(), [bgc, gctx] = mk();
+const stage = $('#stage'), camVid = $('#camVid');
+// "desynchronized" pede ao Chrome o modo de baixa latência para a caneta
+const mk = (opts) => { const c = document.createElement('canvas'); return [c, c.getContext('2d', opts) || c.getContext('2d')]; };
+const [bgc, gctx] = mk(), [board, bctx] = mk({desynchronized:true}), [live, lctx] = mk({desynchronized:true});
+const [out, octx] = mk({alpha:false});   // quadro do vídeo, montado só durante a gravação
+bgc.style.zIndex = 0; board.style.zIndex = 2; live.style.zIndex = 3;
+stage.prepend(bgc); stage.append(board, live);
 let W = 1920, H = 1080;
 
 const pages = [{strokes:[], redo:[]}]; let pi = 0;
@@ -264,9 +275,13 @@ const page = () => pages[pi];
 /* ---------- formato e fundo ---------- */
 function setFormat(f){
   S.format = f; [W, H] = f === '16:9' ? [1920,1080] : [1080,1920];
-  for (const c of [stage, board, live, bgc]) { c.width = W; c.height = H; }
-  cam.x = null; buildBg(); redrawBoard(); fit();
+  for (const c of [board, live, bgc]) { c.width = W; c.height = H; }
+  cam.x = null; sizeOut(); buildBg(); redrawBoard(); fit();
   $('#fmtLabel').textContent = f;
+}
+function sizeOut(){
+  const k = S.quality === '720' ? 2/3 : 1;
+  out.width = Math.round(W*k); out.height = Math.round(H*k);
 }
 function buildBg(){
   const b = BGS[S.bg];
@@ -288,6 +303,7 @@ function fit(){
   const sc = Math.min((r.width - 20)/W, (r.height - 20)/H);
   stage.style.width = Math.floor(W*sc) + 'px';
   stage.style.height = Math.floor(H*sc) + 'px';
+  placeCam();
 }
 new ResizeObserver(fit).observe($('#wrap'));
 
@@ -336,7 +352,6 @@ function redrawBoard(){
 }
 
 /* ---------- câmera ---------- */
-const camVid = $('#camVid');
 let camStream = null, micStream = null;
 const cam = {x:null, y:null};
 const camReady = () => camStream && camVid.readyState >= 2 && camVid.videoWidth > 0;
@@ -364,8 +379,7 @@ function drawCamWindow(ctx){
   ctx.beginPath();
   if (S.camShape === 'redonda') ctx.arc(r.x + r.w/2, r.y + r.h/2, r.w/2, 0, 7);
   else ctx.roundRect ? ctx.roundRect(r.x, r.y, r.w, r.h, 28) : ctx.rect(r.x, r.y, r.w, r.h);
-  ctx.shadowColor = 'rgba(0,0,0,.35)'; ctx.shadowBlur = 30; ctx.fillStyle = '#000'; ctx.fill();
-  ctx.shadowColor = 'transparent'; ctx.save(); ctx.clip(); drawCover(ctx, r.x, r.y, r.w, r.h); ctx.restore();
+  ctx.save(); ctx.clip(); drawCover(ctx, r.x, r.y, r.w, r.h); ctx.restore();
   ctx.lineWidth = 7; ctx.strokeStyle = '#ffffff'; ctx.stroke();
   ctx.restore();
 }
@@ -376,17 +390,43 @@ function inCam(p){
   return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
 }
 
-/* ---------- quadro a quadro ---------- */
-function frame(){
-  sctx.globalCompositeOperation = 'source-over';
-  if (S.camMode === 'fundo' && camReady()){ sctx.fillStyle = '#000'; sctx.fillRect(0,0,W,H); drawCover(sctx, 0, 0, W, H); }
-  else sctx.drawImage(bgc, 0, 0);
-  sctx.drawImage(board, 0, 0);
-  sctx.drawImage(live, 0, 0);
-  if (S.camMode === 'janela' && camReady()) drawCamWindow(sctx);
-  meterTick();
-  requestAnimationFrame(frame);
+/* ---------- câmera na tela (elemento de vídeo, sem redesenhar a lousa) ---------- */
+function placeCam(){
+  const sc = stage.clientWidth / W || 0, st = camVid.style;
+  camVid.classList.remove('win');
+  if (!camReady() || S.camMode === 'oculta'){ st.visibility = 'hidden'; bgc.style.visibility = 'visible'; return; }
+  st.visibility = 'visible';
+  st.transform = S.mirror ? 'scaleX(-1)' : '';
+  if (S.camMode === 'fundo'){
+    bgc.style.visibility = 'hidden';
+    Object.assign(st, {left:'0', top:'0', width:'100%', height:'100%', borderWidth:'0', borderRadius:'0'});
+    return;
+  }
+  bgc.style.visibility = 'visible';
+  const r = camRect(); camVid.classList.add('win');
+  Object.assign(st, {left:r.x*sc + 'px', top:r.y*sc + 'px', width:r.w*sc + 'px', height:r.h*sc + 'px',
+    borderWidth:Math.max(2, 7*sc) + 'px', borderRadius: S.camShape === 'redonda' ? '50%' : 28*sc + 'px'});
 }
+camVid.addEventListener('loadedmetadata', placeCam);
+camVid.addEventListener('resize', placeCam);
+camVid.addEventListener('playing', placeCam);
+
+/* ---------- montagem do vídeo (só enquanto grava, 30 quadros/s) ---------- */
+let lastOut = 0;
+function drawOut(){
+  octx.setTransform(out.width/W, 0, 0, out.height/H, 0, 0);
+  if (S.camMode === 'fundo' && camReady()){ octx.fillStyle = '#000'; octx.fillRect(0,0,W,H); drawCover(octx, 0, 0, W, H); }
+  else octx.drawImage(bgc, 0, 0);
+  octx.drawImage(board, 0, 0);
+  octx.drawImage(live, 0, 0);
+  if (S.camMode === 'janela' && camReady()) drawCamWindow(octx);
+}
+function compose(now){
+  if (recState === 'idle') return;
+  if (now - lastOut >= 1000/30 - 4){ lastOut = now; drawOut(); }
+  requestAnimationFrame(compose);
+}
+setInterval(meterTick, 100);
 
 /* ---------- entrada da caneta ---------- */
 let cur = null, drag = null, penSeen = false;
@@ -415,7 +455,7 @@ stage.addEventListener('pointerdown', e => {
   if (s.tool === 'marca' || s.tool === 'reta') drawLive();
 });
 stage.addEventListener('pointermove', e => {
-  if (drag && e.pointerId === drag.id){ const p = toBoard(e); cam.x = p.x - drag.dx; cam.y = p.y - drag.dy; return; }
+  if (drag && e.pointerId === drag.id){ const p = toBoard(e); cam.x = p.x - drag.dx; cam.y = p.y - drag.dy; placeCam(); return; }
   if (!cur || e.pointerId !== cur.id) return;
   const s = cur.s, list = (e.getCoalescedEvents && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e];
   for (const ev of list){
@@ -479,7 +519,7 @@ function updateUI(){
   document.querySelectorAll('.seg[data-k]').forEach(g => g.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', S[g.dataset.k] === b.dataset.v)));
   document.querySelectorAll('[data-t]').forEach(b => b.setAttribute('aria-pressed', !!S[b.dataset.t]));
   const fmtLocked = recState !== 'idle';
-  document.querySelectorAll('.seg[data-k="format"] button').forEach(b => b.disabled = fmtLocked);
+  document.querySelectorAll('.seg[data-k="format"] button, .seg[data-k="quality"] button').forEach(b => b.disabled = fmtLocked);
   $('#fmtHint').textContent = fmtLocked ? 'Não dá para trocar o formato durante a gravação.' : 'Troque o formato antes de começar a escrever.';
 }
 
@@ -490,9 +530,10 @@ document.querySelectorAll('.seg[data-k]').forEach(g => g.addEventListener('click
   S[k] = v; store.set(k, v);
   if (k === 'format' && v !== old) setFormat(v);
   if (k === 'bg'){ if (S.color === BGS[old].ink || S.color === '#14161a' || S.color === '#ffffff') S.color = BGS[v].ink; buildBg(); }
-  updateUI();
+  if (k === 'quality') sizeOut();
+  placeCam(); updateUI();
 }));
-document.querySelectorAll('[data-t]').forEach(b => b.addEventListener('click', () => { const k = b.dataset.t; S[k] = !S[k]; store.set(k, S[k]); updateUI(); }));
+document.querySelectorAll('[data-t]').forEach(b => b.addEventListener('click', () => { const k = b.dataset.t; S[k] = !S[k]; store.set(k, S[k]); placeCam(); updateUI(); }));
 
 function openSheet(id){ closeSheets(); $(id).classList.add('open'); $('#scrim').hidden = false; }
 function closeSheets(){ document.querySelectorAll('.sheet').forEach(s => s.classList.remove('open')); $('#scrim').hidden = true; }
@@ -531,6 +572,7 @@ function pickMic(mics){
 async function openCam(id){
   if (camStream){ camStream.getTracks().forEach(t => t.stop()); camStream = null; }
   S.camId = id || null; $('#camSel').value = id || '';
+  placeCam();
   if (!id) return;
   try{
     camStream = await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:id}, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}}});
@@ -635,9 +677,10 @@ function countdown(){
   });
 }
 function beginRec(){
-  if (!window.MediaRecorder || !stage.captureStream){ toast('Este navegador não grava vídeo. Use Chrome ou Safari atualizados.'); return; }
+  if (!window.MediaRecorder || !out.captureStream){ toast('Este navegador não grava vídeo. Use Chrome ou Safari atualizados.'); return; }
   mime = pickMime();
-  const tracks = [...stage.captureStream(30).getVideoTracks()];
+  drawOut();
+  const tracks = [...out.captureStream(30).getVideoTracks()];
   if (micStream) tracks.push(...micStream.getAudioTracks());
   const opts = {videoBitsPerSecond: 6000000, audioBitsPerSecond: 128000};
   if (mime) opts.mimeType = mime;
@@ -649,6 +692,7 @@ function beginRec(){
   rec.onstop = finishRec;
   rec.start(1000);
   recState = 'rec'; tAcc = 0; tStart = performance.now();
+  requestAnimationFrame(compose);
   tick = setInterval(showTime, 250); showTime();
   if (navigator.wakeLock) navigator.wakeLock.request('screen').then(w => wake = w).catch(()=>{});
   if (!micStream) toast('Gravando sem áudio: nenhum microfone ativo');
@@ -723,7 +767,6 @@ function toast(msg){ const t = $('#toast'); t.textContent = msg; t.hidden = fals
 /* ---------- arranque ---------- */
 setFormat(S.format);
 renderList(); paintRecUI();
-requestAnimationFrame(frame);
 })();
 </script>
 </body>
