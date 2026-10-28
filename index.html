@@ -129,7 +129,7 @@ select{width:100%;font:inherit;color:var(--fg);background:var(--raised);border:1
 <div class="top">
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8 21h8M12 17v4M6 13c2-4 4-4 6-1s4 2 6-3"/></svg>
-    Lousa Gravada <small id="fmtLabel">16:9</small> <small>v7</small>
+    Lousa Gravada <small id="fmtLabel">16:9</small> <small>v8</small>
   </div>
   <div class="meter" title="Nível do microfone"><i id="meter"></i></div>
   <div class="timer" id="timer"><span class="dot"></span><span id="time">00:00</span></div>
@@ -293,6 +293,7 @@ function sizeOut(){
 }
 function buildBg(){
   const b = BGS[S.bg]; dirty = true;
+  queueMicrotask(wSendBg);
   gctx.fillStyle = b.fill; gctx.fillRect(0,0,W,H);
   const step = 60;
   if (b.grid){
@@ -363,6 +364,7 @@ function drawStroke(ctx, s){
 }
 function redrawBoard(){
   buildBg(); dirty = true;
+  wPost({t:'strokes', list: page().strokes});
   bctx.clearRect(0,0,W,H);
   for (const s of page().strokes) drawStroke(bctx, s);
   updateUI();
@@ -396,6 +398,7 @@ function startFrames(){
           const {value, done} = await rd.read();
           if (done) break;
           if (rd !== camReader){ value.close(); break; }
+          if (worker){ wPost({t:'frame', f:value}, [value]); continue; }
           if (camFrame) camFrame.close();
           camFrame = value; dirty = true;
         }
@@ -404,6 +407,7 @@ function startFrames(){
   }catch(e){ camReader = null; }
 }
 function stopFrames(){
+  wPost({t:'nocam'});
   if (camReader){ camReader.cancel().catch(()=>{}); camReader = null; }
   if (camClone){ camClone.stop(); camClone = null; }
   if (camFrame){ camFrame.close(); camFrame = null; }
@@ -436,7 +440,7 @@ function inCam(p){
 
 /* ---------- câmera na tela (elemento de vídeo, sem redesenhar a lousa) ---------- */
 function placeCam(){
-  dirty = true;
+  dirty = true; wSendCam();
   const sc = stage.clientWidth / W || 0, st = camVid.style;
   camVid.classList.remove('win');
   if (!camReady() || S.camMode === 'oculta'){ st.visibility = 'hidden'; bgc.style.visibility = 'visible'; return; }
@@ -456,7 +460,100 @@ camVid.addEventListener('loadedmetadata', placeCam);
 camVid.addEventListener('resize', placeCam);
 camVid.addEventListener('playing', placeCam);
 
-/* ---------- montagem do vídeo (só enquanto grava, 30 quadros/s) ---------- */
+/* ---------- montagem do vídeo em segundo plano (worker) ---------- */
+// O worker tem sua própria cópia da lousa: recebe os traços, o fundo e os quadros da câmera
+// e monta o vídeo sozinho. Assim a tela principal fica livre só para a caneta.
+let worker = null, recCanvas = null;
+const wPost = (m, tr) => { if (worker) worker.postMessage(m, tr || []); };
+function workerSource(){
+  return `
+const mid = ${mid.toString()};
+${widthOf.toString()}
+${styleFor.toString()}
+${penSeg.toString()}
+${penTail.toString()}
+${drawStroke.toString()}
+let W, H, OW, OH, octx, bctx, board, live, lctx, bg = null, cur = null, liveOn = false, frame = null, cam = {mode:'oculta'}, dirty = true, last = 0, timer = null;
+function cover(ctx, x, y, w, h){
+  const vw = frame.displayWidth, vh = frame.displayHeight, s = Math.max(w/vw, h/vh), sw = w/s, sh = h/s;
+  ctx.save(); if (cam.mirror){ ctx.translate(x*2 + w, 0); ctx.scale(-1, 1); }
+  ctx.drawImage(frame, (vw-sw)/2, (vh-sh)/2, sw, sh, x, y, w, h); ctx.restore();
+}
+function drawLive(){ lctx.clearRect(0,0,W,H); drawStroke(lctx, cur); liveOn = true; }
+function tickW(){
+  const now = performance.now();
+  if (!dirty && now - last < 500) return;
+  dirty = false; last = now;
+  octx.setTransform(OW/W, 0, 0, OH/H, 0, 0);
+  if (cam.mode === 'fundo' && frame){ octx.fillStyle = '#000'; octx.fillRect(0,0,W,H); cover(octx, 0, 0, W, H); }
+  else if (bg) octx.drawImage(bg, 0, 0, W, H);
+  else { octx.fillStyle = '#fff'; octx.fillRect(0,0,W,H); }
+  octx.setTransform(1,0,0,1,0,0);
+  octx.drawImage(board, 0, 0);
+  if (liveOn) octx.drawImage(live, 0, 0);
+  if (cam.mode === 'janela' && frame && cam.rect){
+    const r = cam.rect; octx.setTransform(OW/W, 0, 0, OH/H, 0, 0); octx.save(); octx.beginPath();
+    if (cam.shape === 'redonda') octx.arc(r.x + r.w/2, r.y + r.h/2, r.w/2, 0, 7);
+    else if (octx.roundRect) octx.roundRect(r.x, r.y, r.w, r.h, 28); else octx.rect(r.x, r.y, r.w, r.h);
+    octx.save(); octx.clip(); cover(octx, r.x, r.y, r.w, r.h); octx.restore();
+    octx.lineWidth = 7; octx.strokeStyle = '#ffffff'; octx.stroke(); octx.restore();
+  }
+}
+onmessage = e => {
+  const m = e.data;
+  switch (m.t){
+    case 'init':
+      W = m.W; H = m.H; const outC = m.canvas; OW = outC.width; OH = outC.height;
+      octx = outC.getContext('2d', {alpha:false});
+      board = new OffscreenCanvas(OW, OH); bctx = board.getContext('2d');
+      live = new OffscreenCanvas(OW, OH); lctx = live.getContext('2d');
+      bctx.setTransform(OW/W, 0, 0, OH/H, 0, 0); lctx.setTransform(OW/W, 0, 0, OH/H, 0, 0);
+      timer = setInterval(tickW, 1000/30); break;
+    case 'bg': if (bg && bg.close) bg.close(); bg = m.bmp; dirty = true; break;
+    case 'strokes': bctx.clearRect(0,0,W,H); for (const st of m.list) drawStroke(bctx, st); dirty = true; break;
+    case 'begin': cur = m.s; if (cur.tool === 'marca' || cur.tool === 'reta') drawLive(); dirty = true; break;
+    case 'pts':
+      if (!cur) break;
+      for (const q of m.pts){
+        if (cur.tool === 'reta'){ cur.pts[1] = q; continue; }
+        cur.pts.push(q);
+        if (cur.tool === 'caneta' || cur.tool === 'borracha'){ bctx.save(); styleFor(bctx, cur); penSeg(bctx, cur, cur.pts.length-1); bctx.restore(); }
+      }
+      if (cur.tool === 'marca' || cur.tool === 'reta') drawLive();
+      dirty = true; break;
+    case 'end':
+      if (!cur) break;
+      lctx.clearRect(0,0,W,H); liveOn = false;
+      if (!m.drop){
+        if (cur.tool === 'caneta' || cur.tool === 'borracha'){ bctx.save(); styleFor(bctx, cur); penTail(bctx, cur); bctx.restore(); }
+        else drawStroke(bctx, cur);
+      }
+      cur = null; dirty = true; break;
+    case 'cam': cam = m; dirty = true; break;
+    case 'frame': if (frame) frame.close(); frame = m.f; dirty = true; break;
+    case 'nocam': if (frame){ frame.close(); frame = null; } dirty = true; break;
+    case 'stop': clearInterval(timer); if (frame) frame.close(); close(); break;
+  }
+};`;
+}
+function canUseWorker(){
+  return !!(window.Worker && window.OffscreenCanvas && HTMLCanvasElement.prototype.transferControlToOffscreen
+    && (!camStream || 'MediaStreamTrackProcessor' in window));
+}
+function wSendBg(){ if (worker && window.createImageBitmap) createImageBitmap(bgc).then(b => worker ? wPost({t:'bg', bmp:b}, [b]) : b.close()).catch(()=>{}); }
+function wSendCam(){ if (worker) wPost({t:'cam', mode:S.camMode, shape:S.camShape, mirror:S.mirror, rect: camReady() ? camRect() : null}); }
+function startWorker(){
+  recCanvas = document.createElement('canvas'); recCanvas.width = out.width; recCanvas.height = out.height;
+  const vs = recCanvas.captureStream(30);
+  const off = recCanvas.transferControlToOffscreen();
+  worker = new Worker(URL.createObjectURL(new Blob([workerSource()], {type:'text/javascript'})));
+  wPost({t:'init', canvas:off, W, H}, [off]);
+  wSendBg(); wPost({t:'strokes', list: page().strokes}); wSendCam();
+  return vs;
+}
+function stopWorker(){ if (worker){ wPost({t:'stop'}); const w = worker; worker = null; setTimeout(() => w.terminate(), 1000); } recCanvas = null; }
+
+/* ---------- montagem do vídeo na tela principal (reserva, se o worker não existir) ---------- */
 let lastOut = 0;
 function drawOut(){
   octx.setTransform(out.width/W, 0, 0, out.height/H, 0, 0);
@@ -506,6 +603,7 @@ stage.addEventListener('pointerdown', e => {
   const s = {tool, color:S.color, w:SIZES[S.size], pen:e.pointerType === 'pen', pts:[pt]};
   if (s.tool === 'reta') s.pts.push({...pt});
   cur = {id:e.pointerId, s};
+  wPost({t:'begin', s:{tool:s.tool, color:s.color, w:s.w, pen:s.pen, pts:s.pts.map(q => ({...q}))}});
   if (s.tool === 'marca' || s.tool === 'reta') drawLive();
 });
 // "pointerrawupdate" entrega a posição da caneta assim que chega, sem esperar o próximo quadro da tela
@@ -513,15 +611,16 @@ const RAW = 'onpointerrawupdate' in window;
 function drawInput(e){
   if (!cur || e.pointerId !== cur.id) return;
   const s = cur.s, list = (e.getCoalescedEvents && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e];
-  dirty = true;
+  dirty = true; const sent = [];
   for (const ev of list){
     const pt = toBoard(ev);
-    if (s.tool === 'reta'){ s.pts[1] = pt; continue; }
+    if (s.tool === 'reta'){ s.pts[1] = pt; sent.push(pt); continue; }
     const L = s.pts[s.pts.length-1];
     if (Math.hypot(pt.x - L.x, pt.y - L.y) < 1.5) continue;
-    s.pts.push(pt);
+    s.pts.push(pt); sent.push(pt);
     if (s.tool === 'caneta' || s.tool === 'borracha'){ bctx.save(); styleFor(bctx, s); penSeg(bctx, s, s.pts.length-1); bctx.restore(); }
   }
+  if (sent.length) wPost({t:'pts', pts:sent});
   if (s.tool === 'marca' || s.tool === 'reta') drawLive();
 }
 // previsão: desenha um pedacinho à frente da caneta para a tinta parecer colada na ponta
@@ -548,7 +647,9 @@ function endStroke(e){
   if (!cur || e.pointerId !== cur.id) return;
   const s = cur.s; cur = null;
   lctx.clearRect(0,0,W,H); liveOn = false; dirty = true;
-  if (s.tool === 'reta' && Math.hypot(s.pts[1].x - s.pts[0].x, s.pts[1].y - s.pts[0].y) < 3) return;
+  const drop = s.tool === 'reta' && Math.hypot(s.pts[1].x - s.pts[0].x, s.pts[1].y - s.pts[0].y) < 3;
+  wPost({t:'end', drop});
+  if (drop) return;
   if (s.tool === 'caneta' || s.tool === 'borracha'){ bctx.save(); styleFor(bctx, s); penTail(bctx, s); bctx.restore(); }
   else drawStroke(bctx, s);
   page().strokes.push(s); page().redo = [];
@@ -864,9 +965,14 @@ function countdown(){
 function beginRec(){
   if (!window.MediaRecorder || !out.captureStream){ toast('Este navegador não grava vídeo. Use Chrome ou Safari atualizados.'); return; }
   mime = pickMime();
-  drawOut(); startFrames(); dirty = true;
-  let vs = out.captureStream(0); outTrack = vs.getVideoTracks()[0];
-  if (!outTrack || !outTrack.requestFrame){ vs = out.captureStream(30); outTrack = null; }
+  let vs = null;
+  if (canUseWorker()){ try{ vs = startWorker(); }catch(e){ stopWorker(); vs = null; } }
+  if (!vs){
+    drawOut(); dirty = true;
+    vs = out.captureStream(0); outTrack = vs.getVideoTracks()[0];
+    if (!outTrack || !outTrack.requestFrame){ vs = out.captureStream(30); outTrack = null; }
+  }
+  startFrames();
   const tracks = [...vs.getVideoTracks()];
   if (micStream) tracks.push(...micStream.getAudioTracks());
   const opts = {videoBitsPerSecond: 6000000, audioBitsPerSecond: 128000};
@@ -879,7 +985,7 @@ function beginRec(){
   rec.onstop = finishRec;
   rec.start(1000);
   recState = 'rec'; tAcc = 0; tStart = performance.now();
-  requestAnimationFrame(compose);
+  if (!worker) requestAnimationFrame(compose);
   tick = setInterval(showTime, 250); showTime();
   if (navigator.wakeLock) navigator.wakeLock.request('screen').then(w => wake = w).catch(()=>{});
   if (!micStream) toast('Gravando sem áudio: nenhum microfone ativo');
@@ -893,6 +999,7 @@ function stopRec(){
   paintRecUI();
 }
 function finishRec(){
+  stopWorker();
   const type = mime.split(';')[0], ext = type.includes('mp4') ? 'mp4' : 'webm';
   const blob = new Blob(chunks, {type}); chunks = []; rec = null;
   const d = new Date(), p = n => String(n).padStart(2,'0');
