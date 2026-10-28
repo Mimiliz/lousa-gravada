@@ -54,6 +54,7 @@ svg{display:block}
 #stage canvas{left:0;top:0;width:100%;height:100%}
 #camVid{object-fit:cover;background:#000;border:0 solid #fff;visibility:hidden;z-index:1}
 #camVid.win{z-index:4;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+#stage.moving{cursor:grab}
 #stage.recording{box-shadow:0 0 0 3px var(--rec),0 10px 40px rgba(0,0,0,.5)}
 
 /* ferramentas */
@@ -126,7 +127,7 @@ select{width:100%;font:inherit;color:var(--fg);background:var(--raised);border:1
 <div class="top">
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8 21h8M12 17v4M6 13c2-4 4-4 6-1s4 2 6-3"/></svg>
-    Lousa Gravada <small id="fmtLabel">16:9</small> <small>v5</small>
+    Lousa Gravada <small id="fmtLabel">16:9</small> <small>v6</small>
   </div>
   <div class="meter" title="Nível do microfone"><i id="meter"></i></div>
   <div class="timer" id="timer"><span class="dot"></span><span id="time">00:00</span></div>
@@ -153,6 +154,7 @@ select{width:100%;font:inherit;color:var(--fg);background:var(--raised);border:1
     <button class="tool" data-tool="caneta" aria-label="Caneta"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 20l1-4L16 5l3 3L8 19z"/><path d="M14 7l3 3"/></svg></button>
     <button class="tool" data-tool="marca" aria-label="Marca-texto"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M9 15l-3 3h-3l2-2 1-4 9-9 5 5-9 9z"/><path d="M3 21h18" opacity=".5"/></svg></button>
     <button class="tool" data-tool="reta" aria-label="Linha reta"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 19L19 5"/><circle cx="5" cy="19" r="1.6" fill="currentColor"/><circle cx="19" cy="5" r="1.6" fill="currentColor"/></svg></button>
+    <button class="tool" data-tool="mover" aria-label="Mover e redimensionar a imagem da página"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"/></svg></button>
     <button class="tool" data-tool="borracha" aria-label="Borracha"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M8 20h12M4.5 15.5l9-9a2 2 0 012.8 0l2.2 2.2a2 2 0 010 2.8L11 19H8.5z"/><path d="M9 11l5 5"/></svg></button>
   </div>
   <div class="sep"></div>
@@ -172,6 +174,7 @@ select{width:100%;font:inherit;color:var(--fg);background:var(--raised);border:1
     <button class="tool" id="nextPg" aria-label="Próxima página"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9 5l7 7-7 7"/></svg></button>
     <button class="tool" id="impPg" aria-label="Importar PDF ou imagem"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5M12 18v-6M9 15l3-3 3 3"/></svg></button>
     <input type="file" id="fileIn" accept="application/pdf,image/*" multiple hidden>
+    <button class="tool danger" id="delPg" aria-label="Excluir esta página"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9.5 9.5l5 5M14.5 9.5l-5 5"/></svg></button>
     <button class="tool" id="addPg" aria-label="Nova página"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M12 9v6M9 12h6"/></svg></button>
   </div>
 </div>
@@ -301,7 +304,13 @@ function buildBg(){
     for (let x = step; x < W; x += step) for (let y = step; y < H; y += step){ gctx.beginPath(); gctx.arc(x,y,2.6,0,7); gctx.fill(); }
   }
   const im = page().img;   // página importada de PDF ou imagem
-  if (im){ const k = Math.min(W/im.width, H/im.height), w = im.width*k, h = im.height*k; gctx.drawImage(im, (W-w)/2, (H-h)/2, w, h); }
+  if (im){ const r = imgRect(page()); gctx.drawImage(im, r.x, r.y, r.w, r.h); }
+}
+// posição e tamanho da imagem importada: centro (cx, cy) e escala k sobre o tamanho que cabe na lousa
+function imgRect(p){
+  const im = p.img, t = p.tf || (p.tf = {cx:W/2, cy:H/2, k:1});
+  const base = Math.min(W/im.width, H/im.height), w = im.width*base*t.k, h = im.height*base*t.k;
+  return {x:t.cx - w/2, y:t.cy - h/2, w, h};
 }
 function fit(){
   const r = $('#wrap').getBoundingClientRect();
@@ -482,6 +491,10 @@ stage.addEventListener('pointerdown', e => {
     penSeen = true;
     if (!S.penOnly){ S.penOnly = true; store.set('penOnly', true); updateUI(); toast('S Pen detectada: agora só a caneta escreve. Dá para mudar em Ajustes.'); }
   }
+  if (S.tool === 'mover'){
+    if (!page().img){ toast('Esta página não tem imagem para mover. Importe um PDF ou imagem.'); return; }
+    stage.setPointerCapture(e.pointerId); mv.set(e.pointerId, pt); mvStart(); return;
+  }
   if (S.penOnly && e.pointerType === 'touch') return;
   if (cur) return;
   stage.setPointerCapture(e.pointerId);
@@ -495,7 +508,7 @@ stage.addEventListener('pointerdown', e => {
 });
 stage.addEventListener('pointermove', e => {
   if (drag && e.pointerId === drag.id){ const p = toBoard(e); cam.x = p.x - drag.dx; cam.y = p.y - drag.dy; placeCam(); return; }
-  dirty = true;
+  if (mv.has(e.pointerId)){ mv.set(e.pointerId, toBoard(e)); mvMove(); return; }
   if (!cur || e.pointerId !== cur.id) return;
   const s = cur.s, list = (e.getCoalescedEvents && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e];
   for (const ev of list){
@@ -510,6 +523,7 @@ stage.addEventListener('pointermove', e => {
 });
 function endStroke(e){
   if (drag && e.pointerId === drag.id){ drag = null; return; }
+  if (mv.has(e.pointerId)){ mv.delete(e.pointerId); mvStart(); return; }
   if (!cur || e.pointerId !== cur.id) return;
   const s = cur.s; cur = null;
   lctx.clearRect(0,0,W,H); liveOn = false; dirty = true;
@@ -521,6 +535,28 @@ function endStroke(e){
 }
 stage.addEventListener('pointerup', endStroke);
 stage.addEventListener('pointercancel', endStroke);
+// gesto de mover: 1 dedo arrasta, 2 dedos aproximam ou afastam
+const mv = new Map(); let mv0 = null;
+function mvState(){
+  const ps = [...mv.values()];
+  if (!ps.length) return null;
+  const c = ps.length > 1 ? {x:(ps[0].x+ps[1].x)/2, y:(ps[0].y+ps[1].y)/2} : ps[0];
+  return {c, d: ps.length > 1 ? Math.hypot(ps[0].x-ps[1].x, ps[0].y-ps[1].y) : 0};
+}
+function mvStart(){ const st = mvState(); mv0 = st && {...st, tf:{...page().tf}}; }
+function mvMove(){
+  const st = mvState(); if (!st || !mv0) return;
+  const t = page().tf, k = (mv0.d && st.d) ? Math.min(6, Math.max(.2, mv0.tf.k * st.d / mv0.d)) : mv0.tf.k;
+  const r = k / mv0.tf.k;   // aproxima em torno do ponto entre os dedos
+  t.k = k;
+  t.cx = st.c.x + (mv0.tf.cx - mv0.c.x) * r;
+  t.cy = st.c.y + (mv0.tf.cy - mv0.c.y) * r;
+  buildBg();
+}
+stage.addEventListener('wheel', e => {
+  if (S.tool !== 'mover' || !page().img) return;
+  e.preventDefault(); const t = page().tf; t.k = Math.min(6, Math.max(.2, t.k * (e.deltaY < 0 ? 1.1 : 1/1.1))); buildBg();
+}, {passive:false});
 function drawLive(){ lctx.clearRect(0,0,W,H); drawStroke(lctx, cur.s); liveOn = true; dirty = true; }
 
 /* ---------- barra de ferramentas ---------- */
@@ -542,6 +578,21 @@ $('#clearBtn').onclick = () => {
   clearArm = setTimeout(() => { clearArm = null; b.classList.remove('arm'); b.innerHTML = trashSvg; }, 2500);
 };
 const trashSvg = $('#clearBtn').innerHTML;
+let delArm = null; const delSvg = $('#delPg').innerHTML;
+$('#delPg').onclick = () => {
+  const b = $('#delPg'), p = page();
+  if (!p.img && !p.strokes.length && pages.length === 1) return;
+  if (!delArm){
+    b.classList.add('arm'); b.textContent = 'Excluir página?';
+    delArm = setTimeout(() => { delArm = null; b.classList.remove('arm'); b.innerHTML = delSvg; }, 2500);
+    return;
+  }
+  clearTimeout(delArm); delArm = null; b.classList.remove('arm'); b.innerHTML = delSvg;
+  if (pages.length === 1) pages[0] = {strokes:[], redo:[], img:null};
+  else { pages.splice(pi, 1); pi = Math.min(pi, pages.length - 1); }
+  if (S.tool === 'mover') S.tool = 'caneta';
+  redrawBoard(); toast('Página excluída');
+};
 $('#prevPg').onclick = () => { if (pi > 0){ pi--; redrawBoard(); } };
 $('#nextPg').onclick = () => { if (pi < pages.length - 1){ pi++; redrawBoard(); } };
 $('#addPg').onclick = () => { pages.splice(pi + 1, 0, {strokes:[], redo:[], img:null}); pi++; redrawBoard(); };
@@ -604,6 +655,7 @@ document.addEventListener('keydown', e => {
 
 function updateUI(){
   document.querySelectorAll('[data-tool]').forEach(b => b.setAttribute('aria-pressed', b.dataset.tool === S.tool));
+  stage.classList.toggle('moving', S.tool === 'mover');
   colorGrp.querySelectorAll('[data-c]').forEach(b => b.setAttribute('aria-pressed', b.dataset.c === S.color && S.tool !== 'borracha'));
   sizeGrp.querySelectorAll('[data-i]').forEach(b => b.setAttribute('aria-pressed', +b.dataset.i === S.size));
   $('#undoBtn').disabled = !page().strokes.length; $('#redoBtn').disabled = !page().redo.length;
