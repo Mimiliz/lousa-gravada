@@ -126,7 +126,7 @@ select{width:100%;font:inherit;color:var(--fg);background:var(--raised);border:1
 <div class="top">
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8 21h8M12 17v4M6 13c2-4 4-4 6-1s4 2 6-3"/></svg>
-    Lousa Gravada <small id="fmtLabel">16:9</small> <small>v4</small>
+    Lousa Gravada <small id="fmtLabel">16:9</small> <small>v5</small>
   </div>
   <div class="meter" title="Nível do microfone"><i id="meter"></i></div>
   <div class="timer" id="timer"><span class="dot"></span><span id="time">00:00</span></div>
@@ -170,6 +170,8 @@ select{width:100%;font:inherit;color:var(--fg);background:var(--raised);border:1
     <button class="tool" id="prevPg" aria-label="Página anterior"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M15 5l-7 7 7 7"/></svg></button>
     <span class="pg" id="pgLabel">1/1</span>
     <button class="tool" id="nextPg" aria-label="Próxima página"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9 5l7 7-7 7"/></svg></button>
+    <button class="tool" id="impPg" aria-label="Importar PDF ou imagem"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5M12 18v-6M9 15l3-3 3 3"/></svg></button>
+    <input type="file" id="fileIn" accept="application/pdf,image/*" multiple hidden>
     <button class="tool" id="addPg" aria-label="Nova página"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M12 9v6M9 12h6"/></svg></button>
   </div>
 </div>
@@ -269,14 +271,15 @@ bgc.style.zIndex = 0; board.style.zIndex = 2; live.style.zIndex = 3;
 stage.prepend(bgc); stage.append(board, live);
 let W = 1920, H = 1080;
 
-const pages = [{strokes:[], redo:[]}]; let pi = 0;
+const pages = [{strokes:[], redo:[], img:null}]; let pi = 0;
+let dirty = true, liveOn = false;   // dirty: algo mudou e o próximo quadro do vídeo precisa ser montado
 const page = () => pages[pi];
 
 /* ---------- formato e fundo ---------- */
 function setFormat(f){
   S.format = f; [W, H] = f === '16:9' ? [1920,1080] : [1080,1920];
   for (const c of [board, live, bgc]) { c.width = W; c.height = H; }
-  cam.x = null; sizeOut(); buildBg(); redrawBoard(); fit();
+  cam.x = null; sizeOut(); redrawBoard(); fit();
   $('#fmtLabel').textContent = f;
 }
 function sizeOut(){
@@ -284,7 +287,7 @@ function sizeOut(){
   out.width = Math.round(W*k); out.height = Math.round(H*k);
 }
 function buildBg(){
-  const b = BGS[S.bg];
+  const b = BGS[S.bg]; dirty = true;
   gctx.fillStyle = b.fill; gctx.fillRect(0,0,W,H);
   const step = 60;
   if (b.grid){
@@ -297,6 +300,8 @@ function buildBg(){
     gctx.fillStyle = b.dots;
     for (let x = step; x < W; x += step) for (let y = step; y < H; y += step){ gctx.beginPath(); gctx.arc(x,y,2.6,0,7); gctx.fill(); }
   }
+  const im = page().img;   // página importada de PDF ou imagem
+  if (im){ const k = Math.min(W/im.width, H/im.height), w = im.width*k, h = im.height*k; gctx.drawImage(im, (W-w)/2, (H-h)/2, w, h); }
 }
 function fit(){
   const r = $('#wrap').getBoundingClientRect();
@@ -346,6 +351,7 @@ function drawStroke(ctx, s){
   ctx.restore();
 }
 function redrawBoard(){
+  buildBg(); dirty = true;
   bctx.clearRect(0,0,W,H);
   for (const s of page().strokes) drawStroke(bctx, s);
   updateUI();
@@ -365,12 +371,39 @@ function camRect(){
   cam.y = Math.min(H - h/2, Math.max(h/2, cam.y));
   return {x: cam.x - w/2, y: cam.y - h/2, w, h};
 }
+// Durante a gravação, os quadros vêm direto da câmera (mais leve que copiar do elemento de vídeo)
+let camFrame = null, camReader = null, camClone = null;
+function startFrames(){
+  stopFrames();
+  if (!camStream || !('MediaStreamTrackProcessor' in window)) return;
+  try{
+    camClone = camStream.getVideoTracks()[0].clone();
+    const rd = camReader = new MediaStreamTrackProcessor({track: camClone}).readable.getReader();
+    (async () => {
+      try{
+        for (;;){
+          const {value, done} = await rd.read();
+          if (done) break;
+          if (rd !== camReader){ value.close(); break; }
+          if (camFrame) camFrame.close();
+          camFrame = value; dirty = true;
+        }
+      }catch(e){}
+    })();
+  }catch(e){ camReader = null; }
+}
+function stopFrames(){
+  if (camReader){ camReader.cancel().catch(()=>{}); camReader = null; }
+  if (camClone){ camClone.stop(); camClone = null; }
+  if (camFrame){ camFrame.close(); camFrame = null; }
+}
 function drawCover(ctx, x, y, w, h){
-  const vw = camVid.videoWidth, vh = camVid.videoHeight, s = Math.max(w/vw, h/vh);
-  const sw = w/s, sh = h/s, sx = (vw - sw)/2, sy = (vh - sh)/2;
+  const src = camFrame || camVid;
+  const vw = camFrame ? camFrame.displayWidth : camVid.videoWidth, vh = camFrame ? camFrame.displayHeight : camVid.videoHeight;
+  const s = Math.max(w/vw, h/vh), sw = w/s, sh = h/s, sx = (vw - sw)/2, sy = (vh - sh)/2;
   ctx.save();
   if (S.mirror){ ctx.translate(x*2 + w, 0); ctx.scale(-1, 1); }
-  ctx.drawImage(camVid, sx, sy, sw, sh, x, y, w, h);
+  ctx.drawImage(src, sx, sy, sw, sh, x, y, w, h);
   ctx.restore();
 }
 function drawCamWindow(ctx){
@@ -392,6 +425,7 @@ function inCam(p){
 
 /* ---------- câmera na tela (elemento de vídeo, sem redesenhar a lousa) ---------- */
 function placeCam(){
+  dirty = true;
   const sc = stage.clientWidth / W || 0, st = camVid.style;
   camVid.classList.remove('win');
   if (!camReady() || S.camMode === 'oculta'){ st.visibility = 'hidden'; bgc.style.visibility = 'visible'; return; }
@@ -418,12 +452,17 @@ function drawOut(){
   if (S.camMode === 'fundo' && camReady()){ octx.fillStyle = '#000'; octx.fillRect(0,0,W,H); drawCover(octx, 0, 0, W, H); }
   else octx.drawImage(bgc, 0, 0);
   octx.drawImage(board, 0, 0);
-  octx.drawImage(live, 0, 0);
+  if (liveOn) octx.drawImage(live, 0, 0);
   if (S.camMode === 'janela' && camReady()) drawCamWindow(octx);
 }
+let outTrack = null;
 function compose(now){
   if (recState === 'idle') return;
-  if (now - lastOut >= 1000/30 - 4){ lastOut = now; drawOut(); }
+  if (!camFrame && camReady() && S.camMode !== 'oculta') dirty = true;   // sem quadros diretos: monta sempre
+  if ((dirty && now - lastOut >= 1000/30 - 3) || now - lastOut > 500){
+    lastOut = now; dirty = false; drawOut();
+    if (outTrack && outTrack.requestFrame) outTrack.requestFrame();
+  }
   requestAnimationFrame(compose);
 }
 setInterval(meterTick, 100);
@@ -456,6 +495,7 @@ stage.addEventListener('pointerdown', e => {
 });
 stage.addEventListener('pointermove', e => {
   if (drag && e.pointerId === drag.id){ const p = toBoard(e); cam.x = p.x - drag.dx; cam.y = p.y - drag.dy; placeCam(); return; }
+  dirty = true;
   if (!cur || e.pointerId !== cur.id) return;
   const s = cur.s, list = (e.getCoalescedEvents && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e];
   for (const ev of list){
@@ -472,7 +512,7 @@ function endStroke(e){
   if (drag && e.pointerId === drag.id){ drag = null; return; }
   if (!cur || e.pointerId !== cur.id) return;
   const s = cur.s; cur = null;
-  lctx.clearRect(0,0,W,H);
+  lctx.clearRect(0,0,W,H); liveOn = false; dirty = true;
   if (s.tool === 'reta' && Math.hypot(s.pts[1].x - s.pts[0].x, s.pts[1].y - s.pts[0].y) < 3) return;
   if (s.tool === 'caneta' || s.tool === 'borracha'){ bctx.save(); styleFor(bctx, s); penTail(bctx, s); bctx.restore(); }
   else drawStroke(bctx, s);
@@ -481,7 +521,7 @@ function endStroke(e){
 }
 stage.addEventListener('pointerup', endStroke);
 stage.addEventListener('pointercancel', endStroke);
-function drawLive(){ lctx.clearRect(0,0,W,H); drawStroke(lctx, cur.s); }
+function drawLive(){ lctx.clearRect(0,0,W,H); drawStroke(lctx, cur.s); liveOn = true; dirty = true; }
 
 /* ---------- barra de ferramentas ---------- */
 const colorGrp = $('#colorGrp'), sizeGrp = $('#sizeGrp');
@@ -504,7 +544,60 @@ $('#clearBtn').onclick = () => {
 const trashSvg = $('#clearBtn').innerHTML;
 $('#prevPg').onclick = () => { if (pi > 0){ pi--; redrawBoard(); } };
 $('#nextPg').onclick = () => { if (pi < pages.length - 1){ pi++; redrawBoard(); } };
-$('#addPg').onclick = () => { pages.splice(pi + 1, 0, {strokes:[], redo:[]}); pi++; redrawBoard(); };
+$('#addPg').onclick = () => { pages.splice(pi + 1, 0, {strokes:[], redo:[], img:null}); pi++; redrawBoard(); };
+
+/* ---------- importar PDF e imagens como páginas ---------- */
+let pdfjsP = null;
+function loadPdfJs(){
+  if (!pdfjsP) pdfjsP = new Promise((res, rej) => {
+    const sc = document.createElement('script');
+    sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    sc.onload = () => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; res(window.pdfjsLib); };
+    sc.onerror = () => { pdfjsP = null; rej(new Error('pdfjs')); };
+    document.head.append(sc);
+  });
+  return pdfjsP;
+}
+let impFirst = false;
+function addImgPage(img){
+  const p = page();
+  if (impFirst && !p.strokes.length && !p.img) p.img = img;
+  else { pages.splice(pi + 1, 0, {strokes:[], redo:[], img}); pi++; }
+  impFirst = false; redrawBoard();
+}
+function fitCanvas(src, sw, sh){
+  const k = Math.min(W/sw, H/sh, 1.5), c = document.createElement('canvas');
+  c.width = Math.round(sw*k); c.height = Math.round(sh*k);
+  const x = c.getContext('2d'); x.fillStyle = '#ffffff'; x.fillRect(0,0,c.width,c.height); x.drawImage(src, 0, 0, c.width, c.height);
+  return c;
+}
+async function importPdf(file){
+  const lib = await loadPdfJs();
+  const doc = await lib.getDocument({data: await file.arrayBuffer()}).promise;
+  for (let i = 1; i <= doc.numPages; i++){
+    toast(`Importando página ${i} de ${doc.numPages}…`);
+    const pg = await doc.getPage(i), v1 = pg.getViewport({scale:1});
+    const vp = pg.getViewport({scale: Math.min(W/v1.width, H/v1.height)});
+    const c = document.createElement('canvas'); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+    const cx = c.getContext('2d'); cx.fillStyle = '#ffffff'; cx.fillRect(0,0,c.width,c.height);
+    await pg.render({canvasContext: cx, viewport: vp}).promise;
+    addImgPage(c);
+  }
+  return doc.numPages;
+}
+$('#impPg').onclick = () => $('#fileIn').click();
+$('#fileIn').onchange = async e => {
+  const files = [...e.target.files]; e.target.value = '';
+  if (!files.length) return;
+  impFirst = true; let n = 0;
+  for (const f of files){
+    try{
+      if (f.type === 'application/pdf' || /\.pdf$/i.test(f.name)) n += await importPdf(f);
+      else { const bmp = await createImageBitmap(f); addImgPage(fitCanvas(bmp, bmp.width, bmp.height)); bmp.close && bmp.close(); n++; }
+    }catch(err){ toast(/pdfjs/.test(err.message) ? 'Para abrir PDF o tablet precisa estar com internet.' : 'Não consegui abrir ' + f.name); }
+  }
+  if (n) toast(n === 1 ? '1 página importada' : n + ' páginas importadas');
+};
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z'){ e.preventDefault(); (e.shiftKey ? $('#redoBtn') : $('#undoBtn')).click(); }
 });
@@ -570,6 +663,7 @@ function pickMic(mics){
   return mics.find(m => m.label && m.label === saved) || mics.find(m => m.deviceId === 'default') || mics[0];
 }
 async function openCam(id){
+  stopFrames();
   if (camStream){ camStream.getTracks().forEach(t => t.stop()); camStream = null; }
   S.camId = id || null; $('#camSel').value = id || '';
   placeCam();
@@ -577,6 +671,7 @@ async function openCam(id){
   try{
     camStream = await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:id}, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}}});
     camVid.srcObject = camStream; await camVid.play().catch(()=>{});
+    if (recState !== 'idle') startFrames();
     const lbl = camStream.getVideoTracks()[0].label; if (lbl) store.set('camLabel', lbl);
   }catch(err){ camStream = null; toast('Não consegui abrir essa câmera. Tente outra em Ajustes.'); }
 }
@@ -679,8 +774,10 @@ function countdown(){
 function beginRec(){
   if (!window.MediaRecorder || !out.captureStream){ toast('Este navegador não grava vídeo. Use Chrome ou Safari atualizados.'); return; }
   mime = pickMime();
-  drawOut();
-  const tracks = [...out.captureStream(30).getVideoTracks()];
+  drawOut(); startFrames(); dirty = true;
+  let vs = out.captureStream(0); outTrack = vs.getVideoTracks()[0];
+  if (!outTrack || !outTrack.requestFrame){ vs = out.captureStream(30); outTrack = null; }
+  const tracks = [...vs.getVideoTracks()];
   if (micStream) tracks.push(...micStream.getAudioTracks());
   const opts = {videoBitsPerSecond: 6000000, audioBitsPerSecond: 128000};
   if (mime) opts.mimeType = mime;
@@ -701,7 +798,7 @@ function beginRec(){
 function stopRec(){
   if (!rec) return;
   if (recState === 'rec') tAcc += performance.now() - tStart;
-  recState = 'idle'; rec.stop(); clearInterval(tick); showTime();
+  recState = 'idle'; rec.stop(); clearInterval(tick); showTime(); stopFrames();
   if (wake){ wake.release().catch(()=>{}); wake = null; }
   paintRecUI();
 }
