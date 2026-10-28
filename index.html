@@ -93,6 +93,8 @@ select{width:100%;font:inherit;color:var(--fg);background:var(--raised);border:1
 .toggle .knob::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:transform .15s}
 .toggle[aria-pressed="true"] .knob{background:var(--active)}
 .toggle[aria-pressed="true"] .knob::after{transform:translateX(18px)}
+.range{display:flex;flex-direction:column;gap:6px;color:var(--fg)}
+.range input{width:100%;accent-color:var(--active);height:32px}
 .scrim{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:19}
 
 /* gravações */
@@ -127,7 +129,7 @@ select{width:100%;font:inherit;color:var(--fg);background:var(--raised);border:1
 <div class="top">
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8 21h8M12 17v4M6 13c2-4 4-4 6-1s4 2 6-3"/></svg>
-    Lousa Gravada <small id="fmtLabel">16:9</small> <small>v6</small>
+    Lousa Gravada <small id="fmtLabel">16:9</small> <small>v7</small>
   </div>
   <div class="meter" title="Nível do microfone"><i id="meter"></i></div>
   <div class="timer" id="timer"><span class="dot"></span><span id="time">00:00</span></div>
@@ -198,8 +200,8 @@ select{width:100%;font:inherit;color:var(--fg);background:var(--raised);border:1
     <div class="field"><span class="label">Câmera</span>
       <select id="camSel" aria-label="Câmera"></select>
       <div class="seg" data-k="camMode"><button data-v="janela">Janela</button><button data-v="fundo">Tela cheia</button><button data-v="oculta">Oculta</button></div>
-      <p class="hint">Em “Tela cheia” você escreve por cima da imagem da câmera, bom para mostrar papel ou objetos. Em “Janela”, arraste a câmera com o dedo para mudar de lugar.</p>
-      <div class="seg" data-k="camSize"><button data-v="p">Pequena</button><button data-v="m">Média</button><button data-v="g">Grande</button></div>
+      <p class="hint">Em “Tela cheia” você escreve por cima da imagem da câmera, bom para mostrar papel ou objetos. Em “Janela”, arraste a câmera com o dedo para mudar de lugar e use dois dedos sobre ela para aumentar ou diminuir.</p>
+      <label class="range"><span>Tamanho da câmera</span><input type="range" id="camRange" min="12" max="70" step="1"></label>
       <div class="seg" data-k="camShape"><button data-v="redonda">Redonda</button><button data-v="retangular">Retangular</button></div>
       <button class="toggle" data-t="mirror"><span>Espelhar câmera</span><span class="knob"></span></button>
     </div>
@@ -250,7 +252,7 @@ const S = {
   format: store.get('format','16:9'), bg: store.get('bg','branco'),
   tool: 'caneta', color: null, size: 1,
   penOnly: store.get('penOnly', false),
-  camMode: store.get('camMode','janela'), camSize: store.get('camSize','m'),
+  camMode: store.get('camMode','janela'), camPct: store.get('camPct', {p:24, m:32, g:44}[store.get('camSize','m')] || 32),
   camShape: store.get('camShape','redonda'), mirror: store.get('mirror', false),
   quality: store.get('quality2','720'),
   camId: null, micId: null,
@@ -371,7 +373,7 @@ let camStream = null, micStream = null;
 const cam = {x:null, y:null};
 const camReady = () => camStream && camVid.readyState >= 2 && camVid.videoWidth > 0;
 function camRect(){
-  const short = Math.min(W,H), base = {p:.24, m:.32, g:.44}[S.camSize]*short;
+  const short = Math.min(W,H), base = S.camPct/100*short;
   let w = base, h = base;
   if (S.camShape === 'retangular'){ const ar = (camVid.videoWidth/camVid.videoHeight) || 16/9; w = base*ar; h = base; if (w > W*.6){ w = W*.6; h = w/ar; } }
   const m = 36;
@@ -468,7 +470,7 @@ let outTrack = null;
 function compose(now){
   if (recState === 'idle') return;
   if (!camFrame && camReady() && S.camMode !== 'oculta') dirty = true;   // sem quadros diretos: monta sempre
-  if ((dirty && now - lastOut >= 1000/30 - 3) || now - lastOut > 500){
+  if ((dirty && now - lastOut >= (cur ? 1000/24 : 1000/30) - 3) || now - lastOut > 500){
     lastOut = now; dirty = false; drawOut();
     if (outTrack && outTrack.requestFrame) outTrack.requestFrame();
   }
@@ -477,7 +479,7 @@ function compose(now){
 setInterval(meterTick, 100);
 
 /* ---------- entrada da caneta ---------- */
-let cur = null, drag = null, penSeen = false;
+let cur = null, penSeen = false;
 stage.addEventListener('contextmenu', e => e.preventDefault());
 function toBoard(e){
   const r = stage.getBoundingClientRect();
@@ -486,7 +488,7 @@ function toBoard(e){
 stage.addEventListener('pointerdown', e => {
   if (!started) return;
   const pt = toBoard(e);
-  if (inCam(pt)){ drag = {id:e.pointerId, dx:pt.x - cam.x, dy:pt.y - cam.y}; stage.setPointerCapture(e.pointerId); return; }
+  if (inCam(pt) || (camG.size === 1 && e.pointerType === 'touch')){ stage.setPointerCapture(e.pointerId); camG.set(e.pointerId, pt); camGStart(); return; }
   if (e.pointerType === 'pen' && !penSeen){
     penSeen = true;
     if (!S.penOnly){ S.penOnly = true; store.set('penOnly', true); updateUI(); toast('S Pen detectada: agora só a caneta escreve. Dá para mudar em Ajustes.'); }
@@ -506,11 +508,12 @@ stage.addEventListener('pointerdown', e => {
   cur = {id:e.pointerId, s};
   if (s.tool === 'marca' || s.tool === 'reta') drawLive();
 });
-stage.addEventListener('pointermove', e => {
-  if (drag && e.pointerId === drag.id){ const p = toBoard(e); cam.x = p.x - drag.dx; cam.y = p.y - drag.dy; placeCam(); return; }
-  if (mv.has(e.pointerId)){ mv.set(e.pointerId, toBoard(e)); mvMove(); return; }
+// "pointerrawupdate" entrega a posição da caneta assim que chega, sem esperar o próximo quadro da tela
+const RAW = 'onpointerrawupdate' in window;
+function drawInput(e){
   if (!cur || e.pointerId !== cur.id) return;
   const s = cur.s, list = (e.getCoalescedEvents && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e];
+  dirty = true;
   for (const ev of list){
     const pt = toBoard(ev);
     if (s.tool === 'reta'){ s.pts[1] = pt; continue; }
@@ -520,9 +523,27 @@ stage.addEventListener('pointermove', e => {
     if (s.tool === 'caneta' || s.tool === 'borracha'){ bctx.save(); styleFor(bctx, s); penSeg(bctx, s, s.pts.length-1); bctx.restore(); }
   }
   if (s.tool === 'marca' || s.tool === 'reta') drawLive();
+}
+// previsão: desenha um pedacinho à frente da caneta para a tinta parecer colada na ponta
+function drawPrediction(e){
+  if (!cur || e.pointerId !== cur.id || cur.s.tool !== 'caneta' || !e.getPredictedEvents) return;
+  const pr = e.getPredictedEvents(); lctx.clearRect(0,0,W,H);
+  if (!pr.length){ liveOn = false; return; }
+  const s = cur.s, P = s.pts, L = P[P.length-1];
+  lctx.save(); styleFor(lctx, s); lctx.lineWidth = widthOf(s, L);
+  lctx.beginPath(); lctx.moveTo(L.x, L.y);
+  for (const ev of pr.slice(0, 3)){ const q = toBoard(ev); lctx.lineTo(q.x, q.y); }
+  lctx.stroke(); lctx.restore(); liveOn = true;
+}
+if (RAW) stage.addEventListener('pointerrawupdate', drawInput);
+stage.addEventListener('pointermove', e => {
+  if (camG.has(e.pointerId)){ camG.set(e.pointerId, toBoard(e)); camGMove(); return; }
+  if (mv.has(e.pointerId)){ mv.set(e.pointerId, toBoard(e)); mvMove(); return; }
+  if (!RAW) drawInput(e);
+  drawPrediction(e);
 });
 function endStroke(e){
-  if (drag && e.pointerId === drag.id){ drag = null; return; }
+  if (camG.has(e.pointerId)){ camG.delete(e.pointerId); camGStart(); if (!camG.size) store.set('camPct', S.camPct); return; }
   if (mv.has(e.pointerId)){ mv.delete(e.pointerId); mvStart(); return; }
   if (!cur || e.pointerId !== cur.id) return;
   const s = cur.s; cur = null;
@@ -535,6 +556,21 @@ function endStroke(e){
 }
 stage.addEventListener('pointerup', endStroke);
 stage.addEventListener('pointercancel', endStroke);
+// câmera: 1 dedo arrasta, 2 dedos mudam o tamanho
+const camG = new Map(); let camG0 = null;
+function gState(m){
+  const ps = [...m.values()];
+  if (!ps.length) return null;
+  const c = ps.length > 1 ? {x:(ps[0].x+ps[1].x)/2, y:(ps[0].y+ps[1].y)/2} : ps[0];
+  return {c, d: ps.length > 1 ? Math.hypot(ps[0].x-ps[1].x, ps[0].y-ps[1].y) : 0};
+}
+function camGStart(){ const st = gState(camG); camG0 = st && {...st, x:cam.x, y:cam.y, pct:S.camPct}; }
+function camGMove(){
+  const st = gState(camG); if (!st || !camG0) return;
+  if (camG0.d && st.d) S.camPct = Math.min(70, Math.max(12, camG0.pct * st.d / camG0.d));
+  cam.x = camG0.x + (st.c.x - camG0.c.x); cam.y = camG0.y + (st.c.y - camG0.c.y);
+  $('#camRange').value = S.camPct; placeCam();
+}
 // gesto de mover: 1 dedo arrasta, 2 dedos aproximam ou afastam
 const mv = new Map(); let mv0 = null;
 function mvState(){
@@ -752,6 +788,8 @@ function meterTick(){
   }
   const w = (lv*100).toFixed(0) + '%'; $('#meter').style.width = w; $('#meter2').style.width = w;
 }
+$('#camRange').value = S.camPct;
+$('#camRange').oninput = e => { S.camPct = +e.target.value; store.set('camPct', S.camPct); placeCam(); };
 $('#camSel').onchange = e => openCam(e.target.value);
 $('#micSel').onchange = e => openMic(e.target.value);
 navigator.mediaDevices && navigator.mediaDevices.addEventListener && navigator.mediaDevices.addEventListener('devicechange', async () => {
